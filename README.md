@@ -5,15 +5,15 @@ Use Case Overview: Customers can provide product feedback by uploading an audio 
 
 Key Features:
 1. Text-Based Queries:
-o Support teams can ask questions about the transcribed text to quickly find specific information or identify common themes in the feedback.
+Support teams can ask questions about the transcribed text to quickly find specific information or identify common themes in the feedback.
 
 2. Sentiment Analysis:
-o The system analyzes the transcribed text to determine the sentiment of the feedback, helping support teams prioritize issues that need immediate attention.
+The system analyzes the transcribed text to determine the sentiment of the feedback, helping support teams prioritize issues that need immediate attention.
 
 3. Personalized Responses:
-o Detailed transcriptions allow support teams to provide more personalized and relevant responses to customers, enhancing their overall experience.
+Detailed transcriptions allow support teams to provide more personalized and relevant responses to customers, enhancing their overall experience.
 
 File Processing Capabilities:
-• The tool can process both short (less than 60 seconds) and long (greater than 60 seconds) audio files. Unsupported file types or encoding formats are not supported.
+The tool can process both short (less than 60 seconds) and long (greater than 60 seconds) audio files. Unsupported file types or encoding formats are not supported.
 
 Conclusion: This tool streamlines the feedback process, provides valuable insights, and improves customer satisfaction. 
