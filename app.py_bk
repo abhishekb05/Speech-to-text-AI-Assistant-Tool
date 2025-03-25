@@ -1,0 +1,231 @@
+import streamlit as st
+import io
+from google.cloud import storage
+import vertexai
+from vertexai.preview import reasoning_engines
+from vertexai.preview.generative_models import GenerativeModel
+#from streamlit_audio_recorder import audio_recorder
+from audio_recorder_streamlit import audio_recorder
+from pydub import AudioSegment
+import json
+import time
+ 
+# GCP Storage Configuration
+GCS_BUCKET_NAME = "langgraphvoiceagent"  # Replace with your bucket name
+HISTORY_BLOB_NAME = "transcription_history.json"
+ 
+# Remote Agent
+remote_agent = reasoning_engines.ReasoningEngine('7519049848964775936')  # Replace with your reasoning engine ID
+ 
+# Gemini 1.5 Pro Model
+model = GenerativeModel("gemini-1.5-pro-preview-0409")
+ 
+def upload_to_gcs(bucket_name, blob_name, file_obj):
+    """Uploads a file to the bucket."""
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    blob.upload_from_file(file_obj)
+    print(f"gs://{bucket_name}/{blob_name}")
+    return f"gs://{bucket_name}/{blob_name}"
+ 
+def download_from_gcs(bucket_name, blob_name):
+    """Downloads a file from the bucket."""
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    return blob.download_as_text()
+ 
+def delete_from_gcs(bucket_name, blob_name):
+    """Deletes a file from the bucket."""
+    storage_client = storage.Client()
+    bucket = storage_client.bucket(bucket_name)
+    blob = bucket.blob(blob_name)
+    blob.delete()
+    print(f"Deleted gs://{bucket_name}/{blob_name}")
+ 
+def load_history():
+    """Loads transcription history from GCS."""
+    try:
+        history_str = download_from_gcs(GCS_BUCKET_NAME, HISTORY_BLOB_NAME)
+        return json.loads(history_str)
+    except Exception as e:
+        print(f"Error loading history: {e}")
+        return []
+ 
+def save_history(history):
+    """Saves transcription history to GCS."""
+    try:
+        history_str = json.dumps(history)
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(GCS_BUCKET_NAME)
+        blob = bucket.blob(HISTORY_BLOB_NAME)
+        blob.upload_from_string(history_str)
+    except Exception as e:
+        print(f"Error saving history: {e}")
+ 
+def transcribe_with_agent(gcs_path):
+    """Sends the GCS path to the reasoning engine agent for transcription."""
+    try:
+        start_time = time.time()
+        response = remote_agent.query(audio_file_path=gcs_path)
+        end_time = time.time()
+        transcription_time = end_time - start_time
+ 
+        if isinstance(response, str):
+            return response, transcription_time
+        else:
+            return "Transcription failed or not available in the response.",
+ 
+    except Exception as e:
+        if "400 The audio file is in an unsupported format" in str(e):
+            return "Error: Unsupported audio format. Please use wav, mp3, ogg, or flac.", 0
+        elif "400 Language code is not supported" in str(e):
+            return "Error: Unsupported language.", 0
+        else:
+            return f"Error during transcription: {e}", 0
+ 
+def generate_response(user_question, transcription):
+    """Generates a response using Gemini 1.5 Pro."""
+    try:
+        prompt = f"Transcribed Text:\n{transcription}\n\nUser Question:\n{user_question}\n\nAnswer:"
+        response = model.generate_content(prompt)
+        return response.text if response.text else "Gemini 1.5 Pro did not return a valid response."
+    except Exception as e:
+        return f"Error generating response with Gemini 1.5 Pro: {e}"
+ 
+def process_audio(audio_bytes, channels=1, sample_rate=16000):
+    """Processes the audio to the desired format."""
+    audio = AudioSegment.from_file(io.BytesIO(audio_bytes))
+    audio = audio.set_channels(channels)
+    audio = audio.set_frame_rate(sample_rate)
+    return audio
+   
+ 
+def main():
+    st.title("Speech to Text Assistant")
+    st.markdown("""
+    This Speech to Text AI Assistant provides two main features:
+ 
+    1.  **Audio File Upload and Transcription:**
+        * Users can upload audio files (wav, mp3, ogg, flac) to be transcribed.
+        * After transcription, users can ask questions related to the transcribed text.
+ 
+    2.  **Audio Recording and Transcription:**
+        * Users can record audio directly through their microphone.
+        * The recorded audio is then transcribed, and users can ask questions based on the transcription.
+ 
+    Additionally, users can navigate to and select from past transcriptions stored in the sidebar. This allows them to review previous sessions and ask further questions about those transcriptions.
+    """)
+ 
+    if 'messages' not in st.session_state:
+        st.session_state.messages = [{"role": "assistant", "content": "Upload an audio file for transcription."}]
+    if 'transcription' not in st.session_state:
+        st.session_state['transcription'] = ""
+    if 'gcs_path' not in st.session_state:
+        st.session_state['gcs_path'] = ""
+    if 'history' not in st.session_state:
+        st.session_state['history'] = load_history()
+    if 'transcription_time' not in st.session_state:
+        st.session_state['transcription_time'] = 0
+ 
+    with st.sidebar:
+        st.subheader("Past Transcriptions")
+        for i, item in enumerate(st.session_state['history'][-5:]):
+            if st.button(f"Transcript {i+1} (Preview: {item['transcription'][:50]}...)"):
+                st.session_state['messages'] = [{"role": "assistant", "content": f"Previous Transcript:\n{item['transcription']}"}]
+                st.session_state['transcription'] = item['transcription']
+                st.session_state['gcs_path'] = item['gcs_path']
+                st.session_state['transcription_time'] = item.get('transcription_time', 0)
+ 
+     # Audio recording section
+    st.subheader("Record Audio")
+    audio_bytes = audio_recorder()
+ 
+    if audio_bytes:
+        if st.button("Transcribe Recorded Audio"):
+            try:
+                with st.spinner("Processing recorded audio..."):
+                    processed_audio = process_audio(audio_bytes)
+                    temp_file = io.BytesIO()
+                    processed_audio.export(temp_file, format="wav")
+                    temp_file.seek(0)
+                    blob_name = "recorded_audio.wav"
+                    gcs_path = upload_to_gcs(GCS_BUCKET_NAME, blob_name, temp_file)
+                    st.session_state['gcs_path'] = gcs_path
+                    st.success(gcs_path)
+                    st.success(f"Recorded audio uploaded successfully!")
+ 
+                with st.spinner("Transcribing with agent..."):
+                    transcription, transcription_time = transcribe_with_agent(gcs_path)
+                    st.session_state['transcription'] = transcription
+                    st.session_state['transcription_time'] = transcription_time
+ 
+                    if "failed" in transcription or "Error" in transcription:
+                        st.error(f"Transcription failed: {transcription}")
+                        st.session_state.messages.append({"role": "assistant", "content": f"Transcription failed: {transcription}"})
+                    else:
+                        st.session_state.messages.append({"role": "assistant", "content": f"Transcribed Text:\n{transcription}"})
+                        st.success(f"Transcription successful! Transcription Time: {transcription_time:.2f} seconds")
+ 
+                    st.session_state['history'].append({'transcription': transcription, 'gcs_path': gcs_path, 'transcription_time': transcription_time})
+                    save_history(st.session_state['history'])
+ 
+                    # Delete the uploaded file from GCS
+                    delete_from_gcs(GCS_BUCKET_NAME, blob_name)
+ 
+            except Exception as e:
+                st.error(f"Error: {e}")
+ 
+    uploaded_file = st.file_uploader("Upload an audio file (wav, mp3, ogg, flac)", type=["wav", "mp3", "ogg", "flac"])
+ 
+    if uploaded_file is not None:
+        if st.button("Upload and Transcribe"):
+            try:
+                with st.spinner("Uploading to GCS..."):
+                    temp_file = io.BytesIO(uploaded_file.getvalue())
+                    blob_name = uploaded_file.name
+                    gcs_path = upload_to_gcs(GCS_BUCKET_NAME, blob_name, temp_file)
+                    st.session_state['gcs_path'] = gcs_path
+                    st.success(gcs_path)
+                    st.success(f"File uploaded successfully!")
+ 
+                with st.spinner("Transcribing with agent..."):
+                    transcription, transcription_time = transcribe_with_agent(gcs_path)
+                    st.session_state['transcription'] = transcription
+                    st.session_state['transcription_time'] = transcription_time
+ 
+                    if "failed" in transcription or "Error" in transcription:
+                        st.error(f"Transcription failed: {transcription}")
+                        st.session_state.messages.append({"role": "assistant", "content": f"Transcription failed: {transcription}"})
+                    else:
+                        st.session_state.messages.append({"role": "assistant", "content": f"Transcribed Text:\n{transcription}"})
+                        st.success(f"Transcription successful! Transcription Time: {transcription_time:.2f} seconds")
+ 
+                        st.session_state['history'].append({'transcription': transcription, 'gcs_path': gcs_path, 'transcription_time': transcription_time})
+                        save_history(st.session_state['history'])
+ 
+                        # Delete the uploaded file from GCS
+                        delete_from_gcs(GCS_BUCKET_NAME, blob_name)
+ 
+            except Exception as e:
+                st.error(f"Error: {e}")
+ 
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+ 
+    if st.session_state['transcription'] and "failed" not in st.session_state['transcription'] and "Error" not in st.session_state['transcription']:
+        if prompt := st.chat_input("Ask a question about the transcription:"):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+ 
+            with st.chat_message("assistant"):
+                assistant_response = generate_response(prompt, st.session_state['transcription'])
+                st.markdown(assistant_response)
+            st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+ 
+if __name__ == "__main__":
+    main()
+

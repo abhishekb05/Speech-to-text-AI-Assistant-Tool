@@ -1,0 +1,10 @@
+streamlit
+google-cloud-storage
+google-auth
+requests
+vertexai
+pydub
+audio-recorder-streamlit
+pydub
+streamlit-audiorecorder
+google-cloud-speech
